@@ -95,7 +95,11 @@ class AzureOpenAIClassifier:
                 else:
                     raise
         except AttributeError:  # fallback if older client
-            resp = client.chat.completions.create(model=self.deployment, messages=messages)  # type: ignore[attr-defined]
+            resp = client.chat.completions.create(
+                model=self.deployment,
+                messages=messages,
+                response_format={"type": "json_object"}
+            )  # type: ignore[attr-defined]
             text = resp.choices[0].message.content or ""
             return self._parse_response(text, batch, categories)
         text = self._extract_text_from_responses(resp)
@@ -133,7 +137,11 @@ class AzureOpenAIClassifier:
                     Evaluate its urgency (for example: occurs frequently, blocks ongoing work, relates to an imminent release).
                     Assess its potential to affect the project timeline (for example: slows down dependent tasks, delays delivery milestones, causes rework).
                     Rank the issues from highest to lowest priority.
-                    For each issue, provide a clear reasoning explaining why it is placed at that priority, citing evidence from the issue content. Output ONLY a JSON array where each element has keys: number (int), repo (string), category (one of: {", ".join(categories)}), priority_level (P0|P1|P2), rationale (short explanation of why you chose this priority).""",
+                    For each issue, provide a clear reasoning explaining why it is placed at that priority, citing evidence from the issue content. 
+                    
+                    CRITICAL: Your response must be ONLY a valid JSON array with NO markdown code blocks, NO explanatory text before or after, and NO trailing commas. Return raw JSON only.
+                    Each element must have exactly these keys: number (int), repo (string), category (one of: {", ".join(categories)}), priority_level (P0|P1|P2), rationale (short explanation of why you chose this priority).
+                    Return exactly {len(batch)} items in the array, one for each issue provided.""",
         }
         issue_blobs = []
         for issue in batch:
@@ -151,30 +159,58 @@ class AzureOpenAIClassifier:
     def _parse_response(self, text: str, batch: List[Issue], categories: List[str]) -> List[ClassificationResult]:
         """Parse and validate JSON array returned by the model.
 
-        Attempts light repair if the model wraps the JSON in explanation text
-        or introduces trailing commas.
+        Attempts multiple repair strategies if the model wraps the JSON in markdown,
+        explanation text, or introduces syntax errors like trailing commas.
         """
         data = None
+        original_text = text
+        
+        # Step 1: Remove markdown code blocks (```json ... ``` or ``` ... ```)
+        text = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
+        text = re.sub(r"```\s*$", "", text.strip(), flags=re.MULTILINE)
+        text = text.strip()
+        
         try:
             data = json.loads(text)
-        except json.JSONDecodeError:
-            logger.warning("Initial JSON parse failed; attempting repair")
+        except json.JSONDecodeError as e:
+            logger.warning("Initial JSON parse failed: %s; attempting repair", e)
+            
+            # Step 2: Extract JSON array from surrounding text
             match = re.search(r"\[.*\]", text, re.DOTALL)
             if not match:
-                logger.error("No JSON array found in response")
+                logger.error("No JSON array found in response. Original text: %s", original_text[:500])
                 raise ValueError("Invalid JSON response: no array found")
+            
             candidate = match.group(0)
-            # remove trailing commas before closing ] or }
+            
+            # Step 3: Apply multiple repair strategies
+            # Remove trailing commas before closing ] or }
             candidate = re.sub(r",(\s*[}\]])", r"\1", candidate)
+            # Remove comments (// or /* */)
+            candidate = re.sub(r"//.*?$", "", candidate, flags=re.MULTILINE)
+            candidate = re.sub(r"/\*.*?\*/", "", candidate, flags=re.DOTALL)
+            # Fix common quote issues
+            candidate = candidate.replace("'", '"')
+            
             try:
                 data = json.loads(candidate)
-            except json.JSONDecodeError as e:
-                logger.error("Repair parse failed: %s", e)
-                raise ValueError("Invalid JSON after repair") from e
+            except json.JSONDecodeError as repair_error:
+                logger.error("Repair parse failed: %s. Candidate: %s", repair_error, candidate[:500])
+                raise ValueError(f"Invalid JSON after repair: {repair_error}") from repair_error
         if not isinstance(data, list):
             raise ValueError("JSON root is not a list")
         if len(data) != len(batch):
-            raise ValueError("JSON array length mismatch batch size")
+            logger.error(
+                "JSON array length mismatch: expected %d items for batch, got %d items. "
+                "Batch issue numbers: %s, Response issue numbers: %s",
+                len(batch),
+                len(data),
+                [issue.number for issue in batch],
+                [entry.get("number") if isinstance(entry, dict) else None for entry in data]
+            )
+            raise ValueError(
+                f"JSON array length mismatch: expected {len(batch)} items, got {len(data)} items"
+            )
 
         normalized: List[ClassificationResult] = []
         other_category = None
@@ -185,26 +221,42 @@ class AzureOpenAIClassifier:
         valid_priorities = {"P0", "P1", "P2"}
 
         issue_map = {iss.number: iss for iss in batch}
-        for entry in data:
+        for idx, entry in enumerate(data):
             if not isinstance(entry, dict):
-                raise ValueError("Entry not an object")
+                logger.error("Entry %d is not a dict: %s", idx, type(entry))
+                raise ValueError(f"Entry {idx} is not an object, got {type(entry).__name__}")
+            
             missing = {"number", "repo", "category", "priority_level", "rationale"} - set(entry.keys())
             if missing:
-                raise ValueError(f"Missing keys: {missing}")
+                logger.error("Entry %d missing keys: %s. Available keys: %s", idx, missing, list(entry.keys()))
+                raise ValueError(f"Entry {idx} missing required keys: {missing}")
+            
             number = entry.get("number")
+            if not isinstance(number, int):
+                logger.error("Entry %d has invalid number type: %s", idx, type(number))
+                raise ValueError(f"Entry {idx}: 'number' must be an integer, got {type(number).__name__}")
+            
             if number not in issue_map:
-                raise ValueError("Number not in batch")
+                logger.error("Entry %d number %d not in batch. Expected: %s", idx, number, list(issue_map.keys()))
+                raise ValueError(f"Entry {idx}: issue number {number} not found in batch")
+            
             category = entry.get("category")
             if category not in categories:
+                logger.warning("Entry %d has invalid category '%s', using '%s'", idx, category, other_category)
                 category = other_category
+            
             priority = entry.get("priority_level")
             rationale = entry.get("rationale") or ""
             if priority not in valid_priorities:
-                rationale += " (priority adjusted to P2)"
+                logger.warning("Entry %d has invalid priority '%s', adjusting to P2", idx, priority)
+                rationale += f" (priority adjusted from {priority} to P2)"
                 priority = "P2"
+            
             repo_val = entry.get("repo")
             if not isinstance(repo_val, str):
-                raise ValueError("repo must be a string")
+                logger.error("Entry %d has invalid repo type: %s", idx, type(repo_val))
+                raise ValueError(f"Entry {idx}: 'repo' must be a string, got {type(repo_val).__name__}")
+            
             normalized.append(
                 ClassificationResult(
                     number=number,

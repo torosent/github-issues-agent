@@ -23,6 +23,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,8 @@ from .models import Issue, load_categories
 from .classifier import AzureOpenAIClassifier
 from .scoring import score_and_rank
 from .report import ReportGenerator
+
+logger = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -176,19 +179,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         repos = _parse_repos(args.repos)
         init_logging()  # ensure logging available early
-        print("Loading configuration...")
+        logger.info("Loading configuration...")
         config = load_config()
 
-        print("Instantiating GitHub client...")
+        logger.info("Instantiating GitHub client...")
         gh = GitHubClient(token=config.github_token)
 
         fetch_kwargs = {"limit": args.limit}
         if args.since:
             since_timestamp = _parse_since(args.since)
-            print(f"Fetching issues updated since {since_timestamp}...")
+            logger.info("Fetching issues updated since %s...", since_timestamp)
             fetch_kwargs["since"] = since_timestamp
         else:
-            print("Fetching issues...")
+            logger.info("Fetching issues...")
         try:
             raw_issues = gh.fetch_issues(repos, **fetch_kwargs)
         except TypeError as e:
@@ -199,11 +202,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             else:
                 raise
         if not raw_issues:
-            print("No issues found; exiting.")
+            logger.info("No issues found; exiting.")
             return 0
-        print(f"Fetched {len(raw_issues)} issues across {len(repos)} repos.")
+        logger.info("Fetched %d issues across %d repos.", len(raw_issues), len(repos))
 
-        print("Converting raw issues to dataclasses...")
+        logger.info("Converting raw issues to dataclasses...")
         issues: List[Issue] = []
         for raw in raw_issues:
             repo = raw.get("repo")  # augmented result contains repo
@@ -211,10 +214,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 raise ValueError("Augmented issue missing 'repo' string")
             issues.append(Issue.from_raw(raw, repo=repo))
 
-        print("Loading categories...")
+        logger.info("Loading categories...")
         categories = load_categories(args.categories_file)
 
-        print("Classifying issues (batch size {})...".format(args.batch_size))
+        logger.info("Classifying issues (batch size %d)...", args.batch_size)
         classifier = AzureOpenAIClassifier(
             endpoint=config.azure_openai_endpoint,
             api_key=config.azure_openai_api_key,
@@ -226,31 +229,31 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         classifications = classifier.classify(issues, categories)
 
-        print("Scoring issues...")
+        logger.info("Scoring issues...")
         scored = score_and_rank(issues, classifications)
 
-        print("Generating markdown report...")
+        logger.info("Generating markdown report...")
         markdown = ReportGenerator(scored, repos).generate()
 
         if args.dry_run:
-            print("Dry run: showing preview (first 20 lines):")
+            logger.info("Dry run: showing preview (first 20 lines):")
             lines = markdown.splitlines()
             preview = "\n".join(lines[:20])
             print(preview)
-            print("Dry run complete; no file written.")
+            logger.info("Dry run complete; no file written.")
             return 0
 
-        print(f"Writing report to {args.output}...")
+        logger.info("Writing report to %s...", args.output)
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(markdown)
-        print(f"Report written: {args.output} (issues: {len(scored)})")
+        logger.info("Report written: %s (issues: %d)", args.output, len(scored))
         return 0
 
     except SystemExit:
         # Re-raise SystemExit from parser or repo parsing to keep its message
         raise
     except Exception as e:  # Broad catch as per requirements
-        print(f"Error: {e}", file=sys.stderr)
+        logger.error("Error: %s", e)
         return 1
 
 
