@@ -1,0 +1,21 @@
+# Example custom categories for GitHub Issues AI Agent
+# Each category can be extended with weights or rules in future versions.
+categories:
+  - name: bug
+    description: Defects causing incorrect behavior
+  - name: feature
+    description: New functionality requests
+  - name: performance
+    description: Speed or resource issues
+  - name: security
+    description: Vulnerabilities or exposure
+  - name: documentation
+    description: Docs improvements or fixes
+  - name: refactor
+    description: Code quality improvements
+  - name: test
+    description: Testing-related tasks
+  - name: enhancement
+    description: Minor improvements and polish
+  - name: other
+    description: Uncategorized items
