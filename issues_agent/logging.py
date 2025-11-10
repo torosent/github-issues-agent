@@ -22,6 +22,9 @@ def init_logging(level: str = "INFO") -> None:
         if getattr(h, "_marker", None) == _HANDLER_MARKER:
             return  # already initialized
 
+    # Remove all existing handlers to prevent duplicates
+    root.handlers.clear()
+
     # Resolve level
     lvl = getattr(logging, level.upper(), logging.INFO)
     root.setLevel(lvl)
