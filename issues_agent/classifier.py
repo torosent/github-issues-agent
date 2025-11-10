@@ -127,18 +127,13 @@ class AzureOpenAIClassifier:
         """
         system = {
             "role": "system",
-            "content": (
-                """You are acting as a senior product and engineering analyst. You will be given the title, description, labels, and comments from one or more GitHub issues in a software project.
+            "content": f"""You are acting as a senior product and engineering analyst. You will be given the title, description, labels, and comments from one or more GitHub issues in a software project.
                     Your task is to:
-
-                    Evaluate each issue’s impact on the product or users (for example: number of users affected, effect on key features, risk of data loss or security breaches).
+                    Evaluate each issue`s impact on the product or users (for example: number of users affected, effect on key features, risk of data loss or security concerns).
                     Evaluate its urgency (for example: occurs frequently, blocks ongoing work, relates to an imminent release).
                     Assess its potential to affect the project timeline (for example: slows down dependent tasks, delays delivery milestones, causes rework).
                     Rank the issues from highest to lowest priority.
-                    For each issue, provide a clear reasoning explaining why it is placed at that priority, citing evidence from the issue content. Output ONLY a JSON array where each element has keys: number (int), repo (string), category (one of: """
-                + ", ".join(categories)
-                + "), priority_level (P0|P1|P2), rationale (short explanation of why you chose this priority)."
-            ),
+                    For each issue, provide a clear reasoning explaining why it is placed at that priority, citing evidence from the issue content. Output ONLY a JSON array where each element has keys: number (int), repo (string), category (one of: {", ".join(categories)}), priority_level (P0|P1|P2), rationale (short explanation of why you chose this priority).""",
         }
         issue_blobs = []
         for issue in batch:
