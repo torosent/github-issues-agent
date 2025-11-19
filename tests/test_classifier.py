@@ -48,14 +48,16 @@ def make_issue(num: int) -> Issue:
 
 def test_classify_single_batch_returns_results():
     from issues_agent.classifier import AzureOpenAIClassifier
+    from issues_agent.llm_client import AzureOpenAIClient
     issues = [make_issue(1), make_issue(2)]
     categories = ["bug", "feature", "other"]
     response_json = json.dumps([
         {"number": 1, "repo": "owner/name", "category": "bug", "priority_level": "P1", "rationale": "Looks important"},
         {"number": 2, "repo": "owner/name", "category": "feature", "priority_level": "P2", "rationale": "Minor"},
     ])
-    client = FakeClient([response_json])
-    clf = AzureOpenAIClassifier(endpoint="e", api_key="k", deployment="d", api_version="v", client=client, batch_size=10)
+    fake_client = FakeClient([response_json])
+    llm_client = AzureOpenAIClient(endpoint="e", api_key="k", deployment="d", api_version="v", client=fake_client)
+    clf = AzureOpenAIClassifier(llm_client=llm_client, batch_size=10)
 
     results = clf.classify(issues, categories)
     assert len(results) == 2
@@ -66,6 +68,7 @@ def test_classify_single_batch_returns_results():
 
 def test_classify_multiple_batches():
     from issues_agent.classifier import AzureOpenAIClassifier
+    from issues_agent.llm_client import AzureOpenAIClient
     categories = ["bug", "feature", "other"]
     issues = [make_issue(i) for i in range(1, 13)]  # 12 issues, batch_size=5 => 3 calls
     # Build three response batches
@@ -82,22 +85,25 @@ def test_classify_multiple_batches():
                 "rationale": "r",
             })
         responses.append(json.dumps(arr))
-    client = FakeClient(responses)
-    clf = AzureOpenAIClassifier(endpoint="e", api_key="k", deployment="d", api_version="v", client=client, batch_size=5)
+    fake_client = FakeClient(responses)
+    llm_client = AzureOpenAIClient(endpoint="e", api_key="k", deployment="d", api_version="v", client=fake_client)
+    clf = AzureOpenAIClassifier(llm_client=llm_client, batch_size=5)
     results = clf.classify(issues, categories)
     assert len(results) == 12
-    assert client.calls == 3
+    assert fake_client.calls == 3
 
 
 def test_parse_repair_malformed_json():
     from issues_agent.classifier import AzureOpenAIClassifier
+    from issues_agent.llm_client import AzureOpenAIClient
     issues = [make_issue(1)]
     categories = ["bug", "feature", "other"]
     bad_response = "Here are the results:\n" + json.dumps([
         {"number": 1, "repo": "owner/name", "category": "bug", "priority_level": "P1", "rationale": "Looks important"}
     ])
-    client = FakeClient([bad_response])
-    clf = AzureOpenAIClassifier(endpoint="e", api_key="k", deployment="d", api_version="v", client=client, batch_size=10)
+    fake_client = FakeClient([bad_response])
+    llm_client = AzureOpenAIClient(endpoint="e", api_key="k", deployment="d", api_version="v", client=fake_client)
+    clf = AzureOpenAIClassifier(llm_client=llm_client, batch_size=10)
     results = clf.classify(issues, categories)
     assert len(results) == 1
     assert results[0].category == "bug"
@@ -105,26 +111,30 @@ def test_parse_repair_malformed_json():
 
 def test_invalid_category_fallback_to_other():
     from issues_agent.classifier import AzureOpenAIClassifier
+    from issues_agent.llm_client import AzureOpenAIClient
     issues = [make_issue(1)]
     categories = ["bug", "feature", "other"]
     response_json = json.dumps([
         {"number": 1, "repo": "owner/name", "category": "unknown", "priority_level": "P1", "rationale": "Unmapped"}
     ])
-    client = FakeClient([response_json])
-    clf = AzureOpenAIClassifier(endpoint="e", api_key="k", deployment="d", api_version="v", client=client, batch_size=10)
+    fake_client = FakeClient([response_json])
+    llm_client = AzureOpenAIClient(endpoint="e", api_key="k", deployment="d", api_version="v", client=fake_client)
+    clf = AzureOpenAIClassifier(llm_client=llm_client, batch_size=10)
     results = clf.classify(issues, categories)
     assert results[0].category == "other"
 
 
 def test_invalid_priority_level_defaults_to_p2():
     from issues_agent.classifier import AzureOpenAIClassifier
+    from issues_agent.llm_client import AzureOpenAIClient
     issues = [make_issue(1)]
     categories = ["bug", "feature", "other"]
     response_json = json.dumps([
         {"number": 1, "repo": "owner/name", "category": "bug", "priority_level": "HIGH", "rationale": "Bad priority"}
     ])
-    client = FakeClient([response_json])
-    clf = AzureOpenAIClassifier(endpoint="e", api_key="k", deployment="d", api_version="v", client=client, batch_size=10)
+    fake_client = FakeClient([response_json])
+    llm_client = AzureOpenAIClient(endpoint="e", api_key="k", deployment="d", api_version="v", client=fake_client)
+    clf = AzureOpenAIClassifier(llm_client=llm_client, batch_size=10)
     results = clf.classify(issues, categories)
     assert results[0].priority_level == "P2"
     assert "adjusted" in results[0].rationale.lower()

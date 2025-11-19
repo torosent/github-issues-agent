@@ -8,6 +8,7 @@ An AI-assisted command line tool that fetches GitHub issues across one or more r
 - **Azure OpenAI GPT-5 classification** with JSON output parsing and automatic repair
 - **Custom category mapping** via YAML/JSON file
 - **Composite scoring** with priority bands (P0 / P1 / P2)
+- **Duplicate issue detection** using local embeddings and LLM verification
 - **Markdown report generation** with summary metrics, tables, and detailed rationales
 - **Dry-run mode** to preview reports without writing files
 - **Configurable reasoning effort & text verbosity** for Azure OpenAI Responses API
@@ -79,6 +80,21 @@ python -m issues_agent --repos owner/repo --limit 50 --output report.md
 python -m issues_agent --repos owner/repo --categories examples/categories.yaml --output report.md
 ```
 
+**Check for duplicates (TF-IDF mode):**
+```bash
+python -m issues_agent --repos owner/repo --check-duplicates --output report.md
+```
+
+**Check for duplicates (LLM + Embeddings mode):**
+```bash
+python -m issues_agent --repos owner/repo --check-duplicates --use-llm-for-duplicates --output report.md
+```
+
+**Check for duplicates ONLY (skip classification):**
+```bash
+python -m issues_agent --repos owner/repo --check-duplicates --skip-classifier --output report.md
+```
+
 **Dry run (preview without writing file):**
 ```bash
 python -m issues_agent --repos owner/repo --output report.md --dry-run
@@ -94,6 +110,10 @@ python -m issues_agent --repos owner/repo --output report.md --dry-run
 | `--since` | Fetch issues updated since (e.g., '2y', '6m', '30d') | `2y` |
 | `--categories-file` | Optional path to YAML/JSON categories file | Default categories |
 | `--batch-size` | Classifier batch size for Azure OpenAI | `10` |
+| `--check-duplicates` | Enable duplicate issue detection | `false` |
+| `--use-llm-for-duplicates` | Use LLM + Embeddings for duplicates (requires `--check-duplicates`) | `false` |
+| `--duplicate-threshold` | Similarity threshold for duplicates (0.0-1.0) | `0.8` |
+| `--skip-classifier` | Skip classification and scoring (useful for duplicate checks) | `false` |
 | `--dry-run` | Preview report without writing file | `false` |
 | `--reasoning-effort` | Reasoning effort hint for model (`low`, `medium`, `high`) | `medium` |
 | `--text-verbosity` | Verbosity of textual output (`low`, `medium`, `high`) | `low` |
@@ -183,6 +203,19 @@ score = 0.4 × severity + 0.2 × recency + 0.2 × comments + 0.2 × reactions
 
 All components are normalized to [0, 1] range before weighting.
 
+## Duplicate Detection
+
+The agent includes a sophisticated duplicate detection system with two modes:
+
+1.  **TF-IDF Mode (Default)**:
+    *   Fast and offline-capable.
+    *   Combines Title Similarity (Sequence Matching), Body Similarity (TF-IDF), and Structural Similarity (labels, creation time).
+
+2.  **LLM + Embeddings Mode (`--use-llm-for-duplicates`)**:
+    *   **Stage 1: Embeddings**: Generates semantic embeddings for ALL issues using `sentence-transformers` (model: `all-mpnet-base-v2`). This runs locally and is free.
+    *   **Stage 2: Candidate Filtering**: Uses cosine similarity to find potential duplicate pairs across the entire dataset (solving the "batch boundary" problem).
+    *   **Stage 3: LLM Verification**: Sends only high-confidence candidates to Azure OpenAI for final verification, checking for semantic equivalence (e.g., "same bug, different wording").
+
 ## Custom Categories
 
 Create a YAML or JSON file to define custom categories:
@@ -249,6 +282,8 @@ github-issues-agent/
 │   ├── github_client.py     # GitHub API client
 │   ├── models.py            # Data models
 │   ├── classifier.py        # Azure OpenAI classifier
+│   ├── duplicates.py        # Duplicate detection logic
+│   ├── llm_client.py        # Shared Azure OpenAI client
 │   ├── scoring.py           # Scoring algorithm
 │   ├── report.py            # Markdown report generator
 │   └── logging.py           # Logging setup

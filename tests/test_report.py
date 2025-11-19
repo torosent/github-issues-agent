@@ -1,6 +1,7 @@
 import re
-from issues_agent.models import ScoredIssue
+from issues_agent.models import ScoredIssue, Issue
 from issues_agent.report import ReportGenerator
+from issues_agent.duplicates import DuplicateGroup
 
 
 def make_issue(number: int, score: float, category: str, priority: str, title: str = None, rationale: str = None):
@@ -110,3 +111,64 @@ def test_category_sections_rationale_truncation():
     line = next(l for l in md.splitlines() if l.startswith("- #1 "))
     assert len(line) < 200  # truncated
     assert "x" * 150 not in line  # ensure not full rationale
+
+
+def test_report_with_duplicates_section():
+    """Test that duplicate groups are rendered in the report."""
+    issues = [make_issue(i, 5.0, "bug", "P1") for i in range(1, 5)]
+    
+    # Create duplicate groups
+    dup_issues = [
+        Issue.from_raw({
+            "number": 1,
+            "title": "Memory leak in parser",
+            "body": "Parser has memory issues",
+            "labels": [],
+            "comments": 0,
+            "created_at": "2025-01-01T00:00:00Z",
+            "updated_at": "2025-01-01T00:00:00Z",
+            "state": "open",
+            "html_url": "https://github.com/test/repo/issues/1",
+            "reactions": {"total_count": 0}
+        }, repo="test/repo"),
+        Issue.from_raw({
+            "number": 2,
+            "title": "Parser memory leak fix needed",
+            "body": "Memory leak in the parser",
+            "labels": [],
+            "comments": 0,
+            "created_at": "2025-01-02T00:00:00Z",
+            "updated_at": "2025-01-02T00:00:00Z",
+            "state": "open",
+            "html_url": "https://github.com/test/repo/issues/2",
+            "reactions": {"total_count": 0}
+        }, repo="test/repo"),
+    ]
+    
+    duplicate_groups = [DuplicateGroup(issues=dup_issues, max_similarity=0.85)]
+    
+    gen = ReportGenerator(issues, ["test/repo"], duplicate_groups=duplicate_groups)
+    md = gen.generate()
+    
+    assert "## Potential Duplicate Issues" in md
+    assert "Memory leak in parser" in md
+    assert "Parser memory leak fix needed" in md
+    assert "85.0%" in md  # Similarity score as percentage
+
+
+def test_report_without_duplicates_no_section():
+    """Test that no duplicate section is shown when no duplicates exist."""
+    issues = [make_issue(1, 5.0, "bug", "P1")]
+    gen = ReportGenerator(issues, ["test/repo"], duplicate_groups=[])
+    md = gen.generate()
+    
+    assert "## Potential Duplicate Issues" not in md
+
+
+def test_report_duplicates_none_parameter():
+    """Test that None duplicate_groups works (backward compatibility)."""
+    issues = [make_issue(1, 5.0, "bug", "P1")]
+    gen = ReportGenerator(issues, ["test/repo"], duplicate_groups=None)
+    md = gen.generate()
+    
+    assert "## Potential Duplicate Issues" not in md

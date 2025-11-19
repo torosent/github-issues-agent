@@ -4,6 +4,7 @@ import re
 from typing import List, Optional, Any, Dict
 
 from .models import Issue, ClassificationResult
+from .llm_client import AzureOpenAIClient
 
 logger = logging.getLogger(__name__)
 
@@ -18,39 +19,22 @@ class AzureOpenAIClassifier:
     """
     def __init__(
         self,
-        endpoint: str,
-        api_key: str,
-        deployment: str,
-        api_version: str,
+        llm_client: AzureOpenAIClient,
         batch_size: int = 10,
         timeout: float = 30.0,
-        client: Optional[object] = None,
         reasoning_effort: Optional[str] = None,
         text_verbosity: Optional[str] = None,
     ):
-        self.endpoint = endpoint
-        self.api_key = api_key
-        self.deployment = deployment
-        self.api_version = api_version
+        self.llm_client = llm_client
+        self.deployment = llm_client.deployment
         self.batch_size = batch_size
         self.timeout = timeout
-        self._client = client
         self.reasoning_effort = reasoning_effort
         self.text_verbosity = text_verbosity
 
     def _get_client(self):
-        """Instantiate (or return injected) Azure OpenAI client lazily."""
-        if self._client is not None:
-            return self._client
-        try:
-            from openai import AzureOpenAI  # lazy import
-        except ImportError as e:  # pragma: no cover
-            raise RuntimeError("AzureOpenAI SDK not installed") from e
-        return AzureOpenAI(
-            api_key=self.api_key,
-            api_version=self.api_version,
-            azure_endpoint=self.endpoint,
-        )
+        """Get the Azure OpenAI client from the shared client."""
+        return self.llm_client._get_client()
 
     def classify(self, issues: List[Issue], categories: List[str]) -> List[ClassificationResult]:
         """Classify a list of issues into categories and priorities.

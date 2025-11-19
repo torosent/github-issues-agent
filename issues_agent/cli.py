@@ -35,6 +35,8 @@ from .models import Issue, load_categories
 from .classifier import AzureOpenAIClassifier
 from .scoring import score_and_rank
 from .report import ReportGenerator
+from .duplicates import DuplicateDetector
+from .llm_client import AzureOpenAIClient
 
 logger = logging.getLogger(__name__)
 
@@ -94,15 +96,40 @@ def build_parser() -> argparse.ArgumentParser:
         "--reasoning-effort",
         dest="reasoning_effort",
         choices=["low", "medium", "high"],
-        default="medium",
-        help="Optional reasoning effort for Responses API (default: medium)",
+        default="low",
+        help="Optional reasoning effort for Responses API (default: low)",
     )
     parser.add_argument(
         "--text-verbosity",
         dest="text_verbosity",
         choices=["low", "medium", "high"],
-        default="low",
-        help="Text verbosity preference for Responses API (default: low)",
+        default="medium",
+        help="Text verbosity preference for Responses API (default: medium)",
+    )
+    parser.add_argument(
+        "--check-duplicates",
+        dest="check_duplicates",
+        action="store_true",
+        help="Detect and report potential duplicate issues (default: False)",
+    )
+    parser.add_argument(
+        "--duplicate-threshold",
+        dest="duplicate_threshold",
+        type=float,
+        default=0.5,
+        help="Similarity threshold for duplicate detection (0.0-1.0, default: 0.5)",
+    )
+    parser.add_argument(
+        "--use-llm-for-duplicates",
+        dest="use_llm_for_duplicates",
+        action="store_true",
+        help="Use LLM for more accurate duplicate detection (slower, uses API)",
+    )
+    parser.add_argument(
+        "--skip-classifier",
+        dest="skip_classifier",
+        action="store_true",
+        help="Skip classification and scoring (only useful with --check-duplicates)",
     )
     return parser
 
@@ -214,26 +241,55 @@ def main(argv: Optional[List[str]] = None) -> int:
                 raise ValueError("Augmented issue missing 'repo' string")
             issues.append(Issue.from_raw(raw, repo=repo))
 
-        logger.info("Loading categories...")
-        categories = load_categories(args.categories_file)
+        # Create shared LLM client if needed
+        llm_client = None
+        if not args.skip_classifier or args.use_llm_for_duplicates:
+            logger.info("Initializing Azure OpenAI client...")
+            llm_client = AzureOpenAIClient(
+                endpoint=config.azure_openai_endpoint,
+                api_key=config.azure_openai_api_key,
+                deployment=config.azure_openai_deployment,
+                api_version=config.azure_openai_api_version,
+            )
+        
+        # Classification and scoring (skip if requested)
+        if args.skip_classifier:
+            logger.info("Skipping classification and scoring as requested.")
+            scored = []
+        else:
+            logger.info("Loading categories...")
+            categories = load_categories(args.categories_file)
 
-        logger.info("Classifying issues (batch size %d)...", args.batch_size)
-        classifier = AzureOpenAIClassifier(
-            endpoint=config.azure_openai_endpoint,
-            api_key=config.azure_openai_api_key,
-            deployment=config.azure_openai_deployment,
-            api_version=config.azure_openai_api_version,
-            batch_size=args.batch_size,
-            reasoning_effort=args.reasoning_effort,
-            text_verbosity=args.text_verbosity,
-        )
-        classifications = classifier.classify(issues, categories)
+            logger.info("Classifying issues (batch size %d)...", args.batch_size)
+            classifier = AzureOpenAIClassifier(
+                llm_client=llm_client,  # type: ignore
+                batch_size=args.batch_size,
+                reasoning_effort=args.reasoning_effort,
+                text_verbosity=args.text_verbosity,
+            )
+            classifications = classifier.classify(issues, categories)
 
-        logger.info("Scoring issues...")
-        scored = score_and_rank(issues, classifications)
+            logger.info("Scoring issues...")
+            scored = score_and_rank(issues, classifications)
+
+        # Duplicate detection if requested
+        duplicate_groups = []
+        if args.check_duplicates:
+            logger.info("Detecting duplicate issues (threshold: %.2f, LLM: %s)...", 
+                       args.duplicate_threshold, args.use_llm_for_duplicates)
+            
+            detector = DuplicateDetector(
+                use_llm=args.use_llm_for_duplicates,
+                llm_client=llm_client if args.use_llm_for_duplicates else None,
+                github_client=gh,
+                fetch_comments=True
+            )
+            
+            duplicate_groups = detector.find_duplicates(issues, threshold=args.duplicate_threshold)
+            logger.info("Found %d potential duplicate groups.", len(duplicate_groups))
 
         logger.info("Generating markdown report...")
-        markdown = ReportGenerator(scored, repos).generate()
+        markdown = ReportGenerator(scored, repos, duplicate_groups=duplicate_groups).generate()
 
         if args.dry_run:
             logger.info("Dry run: showing preview (first 20 lines):")
