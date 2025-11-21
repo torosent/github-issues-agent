@@ -1,156 +1,42 @@
-import os
-from typing import List
-
+import pytest
+from unittest.mock import MagicMock, patch
 from issues_agent.cli import main
-from issues_agent import cli as cli_mod
-from issues_agent.models import ClassificationResult
 
-
-def _fake_issue(number: int, repo: str):
-    return {
-        "number": number,
-        "title": f"Issue {number}",
-        "body": f"Body for issue {number}",
-        "labels": [{"name": "bug" if number % 2 == 0 else "feature"}],
-        "comments": 3 * number,
-        "created_at": "2025-01-01T00:00:00Z",
-        "updated_at": "2025-01-02T00:00:00Z",
-        "state": "open",
-        "html_url": f"https://example.com/{repo}/issues/{number}",
-        "repo": repo,
-        "reactions_total": number,
-        "reactions_positive": number // 2,
+@patch("issues_agent.cli.GitHubClient")
+@patch("issues_agent.cli.AzureOpenAIClient")
+@patch("issues_agent.cli.analyze_issues")
+def test_integration_flow(mock_analyze, mock_llm_cls, mock_gh_cls, tmp_path):
+    # Setup mocks
+    mock_gh = mock_gh_cls.return_value
+    mock_gh.fetch_issues.return_value = [
+        {"number": 1, "title": "Issue 1", "html_url": "http://github.com/owner/repo/issues/1", "body": "body1", "repo": "owner/repo"},
+        {"number": 2, "title": "Issue 2", "html_url": "http://github.com/owner/repo/issues/2", "body": "body2", "repo": "owner/repo"},
+    ]
+    
+    mock_analyze.return_value = {
+        "priorities": [
+            {"issue_id": 1, "priority": "P0", "reasoning": "Critical bug"},
+            {"issue_id": 2, "priority": "P2", "reasoning": "Minor tweak"}
+        ],
+        "duplicates": [[1, 2]],
+        "top_urgent_issues": [1]
     }
-
-
-def test_end_to_end_report_generation(monkeypatch, tmp_path):
-    # Monkeypatch GitHubClient.fetch_issues
-    from issues_agent import github_client
-    from issues_agent import config as cfg
-
-    def fake_load_config():  # noqa: D401
-        return cfg.Config(
-            github_token="gh_token",
-            azure_openai_endpoint="endpoint",
-            azure_openai_api_key="key",
-            azure_openai_deployment="deploy",
-            azure_openai_api_version="2025-01-01",
-        )
-
-    monkeypatch.setattr(cfg, "load_config", fake_load_config)
-    monkeypatch.setattr(cli_mod, "load_config", fake_load_config)
-
-    def fake_fetch(self, repos: List[str], limit: int = 300):  # noqa: D401
-        data = []
-        for r in repos:
-            data.append(_fake_issue(1, r))
-            data.append(_fake_issue(2, r))
-        return data
-
-    monkeypatch.setattr(github_client.GitHubClient, "fetch_issues", fake_fetch)
-
-    # Monkeypatch classifier classify
-    from issues_agent import classifier
-    from issues_agent.models import Issue
-
-    def fake_classify(self, issues: List[Issue], categories: List[str]):  # noqa: D401
-        results = []
-        for iss in issues:
-            # Alternate categories from provided list
-            cat = categories[0] if iss.number % 2 == 0 else categories[1]
-            results.append(
-                ClassificationResult(
-                    number=iss.number,
-                    repo=iss.repo,
-                    category=cat,
-                    priority_level="P1" if iss.number % 2 == 0 else "P2",
-                    rationale=f"Rationale for {iss.number}",
-                )
-            )
-        return results
-
-    monkeypatch.setattr(classifier.AzureOpenAIClassifier, "classify", fake_classify)
-
-    # Monkeypatch categories loader to simple list
-    from issues_agent import models
-
-    def fake_load_categories(path):  # noqa: D401
-        return ["bug", "feature", "other"]
-
-    monkeypatch.setattr(models, "load_categories", fake_load_categories)
-
-    output_path = tmp_path / "report.md"
-    code = main([
-        "--repos",
-        "owner/repo1",
-        "--output",
-        str(output_path),
-        "--limit",
-        "10",
-        "--batch-size",
-        "2",
-    ])
-    assert code == 0
-    assert output_path.exists()
-    content = output_path.read_text(encoding="utf-8")
-    assert "# GitHub Issues Prioritization Report" in content
-    assert "## Category:" in content  # category sections present
-
-
-def test_dry_run_preview(monkeypatch, capsys, tmp_path):
-    from issues_agent import github_client, classifier, models
-    from issues_agent.models import Issue
-    from issues_agent import config as cfg
-
-    def fake_load_config():  # noqa: D401
-        return cfg.Config(
-            github_token="gh_token",
-            azure_openai_endpoint="endpoint",
-            azure_openai_api_key="key",
-            azure_openai_deployment="deploy",
-            azure_openai_api_version="2025-01-01",
-        )
-
-    monkeypatch.setattr(cfg, "load_config", fake_load_config)
-    monkeypatch.setattr(cli_mod, "load_config", fake_load_config)
-
-    def fake_fetch(self, repos: List[str], limit: int = 300):  # noqa: D401
-        return [_fake_issue(1, repos[0])]
-
-    monkeypatch.setattr(github_client.GitHubClient, "fetch_issues", fake_fetch)
-
-    def fake_classify(self, issues: List[Issue], categories: List[str]):  # noqa: D401
-        return [
-            ClassificationResult(
-                number=issues[0].number,
-                repo=issues[0].repo,
-                category=categories[0],
-                priority_level="P2",
-                rationale="Rationale single",
-            )
-        ]
-
-    monkeypatch.setattr(classifier.AzureOpenAIClassifier, "classify", fake_classify)
-
-    def fake_load_categories(path):  # noqa: D401
-        return ["bug", "other"]
-
-    monkeypatch.setattr(models, "load_categories", fake_load_categories)
-
-    output_path = tmp_path / "report_dry.md"
-    code = main([
-        "--repos",
-        "owner/repo2",
-        "--output",
-        str(output_path),
-        "--limit",
-        "5",
-        "--batch-size",
-        "2",
-        "--dry-run",
-    ])
-    assert code == 0
-    assert not output_path.exists()  # dry run should not write file
-    captured = capsys.readouterr()
-    assert "# GitHub Issues Prioritization Report" in captured.out
-    assert "Dry run complete" in captured.out
+    
+    output_file = tmp_path / "report.md"
+    
+    # Run CLI
+    argv = ["--repos", "owner/repo", "--output", str(output_file), "--limit", "10"]
+    exit_code = main(argv)
+    
+    # Assertions
+    assert exit_code == 0
+    assert output_file.exists()
+    
+    content = output_file.read_text()
+    assert "# GitHub Issues Report" in content
+    assert "Top 20 Urgent Issues" in content
+    assert "All Issues (Sorted by Priority)" in content
+    assert "Issue 1" in content
+    assert "P0" in content
+    assert "Critical bug" in content
+    assert "Potential Duplicate Issues" in content

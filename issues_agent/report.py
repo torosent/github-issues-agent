@@ -1,213 +1,137 @@
-"""Markdown report generation utilities (Phase 6).
+"""Markdown report generation utilities.
 
-Generates a deterministic Markdown document from scored issues and
-aggregated metrics provided by the `Report` dataclass.
+Generates a simple Markdown report from analyzed issues.
 """
-from __future__ import annotations
-
-from typing import List, Optional
-
-from .models import Report, ScoredIssue
-from .duplicates import DuplicateGroup
-
+from typing import List, Dict, Any
+from datetime import datetime
 
 class ReportGenerator:
     def __init__(
         self, 
-        scored: List[ScoredIssue], 
-        repos: List[str],
-        duplicate_groups: Optional[List[DuplicateGroup]] = None
+        issues: List[Dict[str, Any]], 
+        analysis_result: Dict[str, Any],
+        repos: List[str]
     ):
         """Initialize a report generator.
 
         Args:
-            scored: List of scored issues (already classified and ranked).
+            issues: List of raw issue dictionaries (must contain number, title, html_url).
+            analysis_result: Dictionary containing 'priorities' and 'duplicates' from analysis.
             repos: List of repository identifiers included in the report.
-            duplicate_groups: Optional list of duplicate issue groups to include in report.
-
-        The constructor computes aggregate metrics up front using `Report.compute_metrics`.
         """
-        self._scored = list(scored)
-        self._repos = list(repos)
-        self._duplicate_groups = duplicate_groups if duplicate_groups else []
-        self._report = Report.compute_metrics(self._scored, self._repos)
+        self.issues = {i['number']: i for i in issues}
+        self.analysis_result = analysis_result
+        self.repos = repos
 
     def generate(self) -> str:
-        """Generate the full markdown report.
-
-        Returns:
-            A markdown string containing header, summary metrics, category counts,
-            top priority issues table, full issues table, and per-category sections.
-
-        The output is deterministic given the scored issues list.
-        """
-        if not self._scored and not self._duplicate_groups:
-            # Minimal document for empty reports
-            parts = [self._render_header(), "", "No issues to report."]
-            return "\n".join(parts) + "\n"
-        
-        if not self._scored and self._duplicate_groups:
-            # Duplicate-only report (no classification/scoring)
-            parts = [
-                self._render_header(),
-                "",
-                "## Potential Duplicate Issues",
-                self._render_duplicates(),
-            ]
-            doc = "\n".join(p for p in parts if p is not None and p != "")
-            return doc + "\n"
+        """Generate the full markdown report."""
         parts = [
             self._render_header(),
             "",
             self._render_summary(),
             "",
-            self._render_category_counts(),
+            "## Top 20 Urgent Issues",
+            self._render_top_urgent_issues(limit=20),
+            "",
+            "## All Issues (Sorted by Priority)",
+            self._render_priorities_table(),
+            "",
+            "## Potential Duplicate Issues",
+            self._render_duplicates(),
         ]
-        
-        # Add duplicate section if duplicates exist
-        if self._duplicate_groups:
-            parts.extend([
-                "",
-                "## Potential Duplicate Issues",
-                self._render_duplicates(),
-            ])
-        
-        parts.extend([
-            "",
-            "## Top Priority Issues",
-            self._render_top_priority(),
-            "",
-            "## All Issues",
-            self._render_all_issues(),
-            "",
-            self._render_category_sections(),
-        ])
-        # Ensure single trailing newline, no extra spaces
-        doc = "\n".join(p for p in parts if p is not None and p != "")
-        return doc + "\n"
+        return "\n".join(parts) + "\n"
 
     def _render_header(self) -> str:
-        """Render the header section with generation timestamp and repository list."""
-        dt = self._report.generated_at.isoformat().replace("+00:00", "Z")
-        repos_str = ", ".join(self._repos) if self._repos else "(none)"
-        return "\n".join([
-            "# GitHub Issues Prioritization Report",
-            f"Generated: {dt}",
-            f"Repositories: {repos_str}",
-        ])
+        dt = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        repos_str = ", ".join(self.repos)
+        return f"# GitHub Issues Report\nGenerated: {dt}\nRepositories: {repos_str}"
 
     def _render_summary(self) -> str:
-        """Render summary metrics (counts, averages, priority statistics)."""
-        issues = self._scored
-        total = len(issues)
-        repo_count = len(self._repos)
-        categories_count = len(self._report.category_counts)
-        top_p0 = sum(1 for i in issues if i.priority_level == "P0")
-        avg_score = sum(i.score for i in issues) / total if total else 0.0
-        return "\n".join(
-            [
-                f"- Total Issues: {total}",
-                f"- Repos Count: {repo_count}",
-                f"- Categories Count: {categories_count}",
-                f"- Top Priority (P0) Count: {top_p0}",
-                f"- Average Score: {avg_score:.3f}\n",
-            ]
+        total_issues = len(self.issues)
+        priorities = self.analysis_result.get("priorities", [])
+        p0_count = sum(1 for p in priorities if p.get("priority") == "P0")
+        p1_count = sum(1 for p in priorities if p.get("priority") == "P1")
+        p2_count = sum(1 for p in priorities if p.get("priority") == "P2")
+        duplicates_count = len(self.analysis_result.get("duplicates", []))
+
+        return (
+            f"- Total Issues Analyzed: {total_issues}\n"
+            f"- P0 Issues: {p0_count}\n"
+            f"- P1 Issues: {p1_count}\n"
+            f"- P2 Issues: {p2_count}\n"
+            f"- Duplicate Groups: {duplicates_count}"
         )
 
-    def _render_category_counts(self) -> str:
-        """Render table listing each category and its issue count."""
-        rows = ["Category | Count", "--- | ---"]
-        for cat in sorted(self._report.category_counts.keys()):
-            rows.append(f"{cat} | {self._report.category_counts[cat]}")
-        return "\n".join(rows)
-
-    def _render_top_priority(self) -> str:
-        """Render table of highest priority (top-ranked) issues for quick scanning."""
+    def _render_issues_table(self, priorities_list: List[Dict[str, Any]]) -> str:
         rows = [
-            "Number | Title | Category | Priority | Score | Labels | Rationale | URL",
-            "--- | --- | --- | --- | --- | --- | --- | ---",
+            "| ID | Title | Priority | Reasoning |",
+            "| --- | --- | --- | --- |"
         ]
-        for issue in self._report.top_priority:
-            rows.append(self._issue_row(issue))
+        
+        for p in priorities_list:
+            issue_id = p.get("issue_id")
+            issue = self.issues.get(issue_id)
+            if not issue:
+                continue
+            
+            title = issue.get("title", "").replace("|", "\\|")
+            url = issue.get("html_url", "")
+            priority = p.get("priority", "Unknown")
+            reasoning = p.get("reasoning", "").replace("|", "\\|")
+            
+            rows.append(f"| [#{issue_id}]({url}) | {title} | {priority} | {reasoning} |")
+            
+        if len(rows) == 2:
+            return "No issues found."
+            
         return "\n".join(rows)
 
-    def _render_all_issues(self) -> str:
-        """Render the full issues table including every scored issue."""
-        rows = [
-            "Number | Title | Category | Priority | Score | Labels | Rationale | URL",
-            "--- | --- | --- | --- | --- | --- | --- | ---",
-        ]
-        for issue in self._scored:
-            rows.append(self._issue_row(issue))
-        return "\n".join(rows)
+    def _get_sorted_priorities(self) -> List[Dict[str, Any]]:
+        priorities = self.analysis_result.get("priorities", [])
+        priority_order = {"P0": 0, "P1": 1, "P2": 2}
+        return sorted(
+            priorities, 
+            key=lambda x: priority_order.get(x.get("priority", "P2"), 3)
+        )
 
-    def _render_category_sections(self) -> str:
-        """Render per-category sections with concise issue rationales.
+    def _render_top_urgent_issues(self, limit: int = 20) -> str:
+        # Use LLM provided top urgent issues if available
+        top_ids = self.analysis_result.get("top_urgent_issues", [])
+        
+        if top_ids:
+            priorities_map = {p["issue_id"]: p for p in self.analysis_result.get("priorities", [])}
+            top_issues_data = []
+            for issue_id in top_ids[:limit]:
+                if issue_id in priorities_map:
+                    top_issues_data.append(priorities_map[issue_id])
+            return self._render_issues_table(top_issues_data)
+        
+        # Fallback to sorting if LLM didn't return it
+        sorted_priorities = self._get_sorted_priorities()
+        top_n = sorted_priorities[:limit]
+        return self._render_issues_table(top_n)
 
-        Each issue rationale is truncated for readability and pipes are escaped for
-        markdown table safety.
-        """
-        parts: List[str] = []
-        by_cat = {}
-        for issue in self._scored:
-            by_cat.setdefault(issue.category, []).append(issue)
-        for cat in sorted(by_cat.keys()):
-            parts.append(f"## Category: {cat}")
-            for issue in by_cat[cat]:
-                truncated = self._truncate(issue.rationale.replace("|", "\\|"), 120)
-                parts.append(
-                    f"- #{issue.number} [{issue.title.replace('|', '\\|')}]({issue.html_url}) "
-                    f"({issue.priority_level}, score {issue.score:.3f}) - {truncated}"
-                )
-        return "\n".join(parts)
+    def _render_priorities_table(self) -> str:
+        sorted_priorities = self._get_sorted_priorities()
+        return self._render_issues_table(sorted_priorities)
 
     def _render_duplicates(self) -> str:
-        """Render duplicate issue groups showing potential duplicates.
-        
-        Each group shows the similarity percentage and lists all issues
-        in that group with their titles and URLs.
-        """
-        if not self._duplicate_groups:
-            return ""
-        
-        parts: List[str] = []
-        parts.append("The following issues may be duplicates:")
-        parts.append("")
-        
-        for i, group in enumerate(self._duplicate_groups, 1):
-            similarity_pct = group.max_similarity * 100
-            parts.append(f"### Duplicate Group {i} (Similarity: {similarity_pct:.1f}%)")
-            parts.append("")
+        duplicates = self.analysis_result.get("duplicates", [])
+        if not duplicates:
+            return "No duplicates found."
+
+        lines = []
+        for group in duplicates:
+            group_links = []
+            for issue_id in group:
+                issue = self.issues.get(issue_id)
+                if issue:
+                    title = issue.get("title", "").replace("|", "\\|")
+                    url = issue.get("html_url", "")
+                    group_links.append(f"[#{issue_id}]({url}) - {title}")
+                else:
+                    group_links.append(f"#{issue_id}")
             
-            for issue in group.issues:
-                title = issue.title.replace("|", "\\|")
-                
-                parts.append(
-                    f"- **#{issue.number}** [{title}]({issue.html_url})"
-                )
+            lines.append("- " + ", ".join(group_links))
             
-            parts.append("")
-        
-        return "\n".join(parts)
-
-    @staticmethod
-    def _truncate(text: str, limit: int) -> str:
-        """Truncate a string to a maximum length preserving original content start."""
-        if len(text) <= limit:
-            return text
-        return text[:limit]
-
-    @staticmethod
-    def _issue_row(issue: ScoredIssue) -> str:
-        """Format a single issue as a markdown table row."""
-        title = issue.title.replace("|", "\\|")
-        labels = ", ".join(issue.labels).replace("|", "\\|") if issue.labels else ""
-        rationale = issue.rationale.replace("|", "\\|").replace("\n", " ")[:200]
-        if len(issue.rationale) > 200:
-            rationale += "..."
-        return (
-            f"{issue.number} | {title} | {issue.category} | {issue.priority_level} | "
-            f"{issue.score:.3f} | {labels} | {rationale} | {issue.html_url}"
-        )
-
-__all__ = ["ReportGenerator"]
+        return "\n".join(lines)
