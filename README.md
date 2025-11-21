@@ -25,9 +25,9 @@ Requires Python >= 3.11.
    # On Windows: .venv\Scripts\activate
    ```
 
-3. Install dependencies:
+3. Install the package:
    ```bash
-   pip install -r requirements.txt
+   pip install -e .
    ```
 
 ## Configuration
@@ -47,6 +47,11 @@ AZURE_OPENAI_API_VERSION=2025-04-01-preview
 Run the agent via the command line:
 
 ```bash
+issues-agent --repos owner/repo --output report.md
+```
+
+Alternatively, you can still use:
+```bash
 python -m issues_agent --repos owner/repo --output report.md
 ```
 
@@ -65,17 +70,17 @@ python -m issues_agent --repos owner/repo --output report.md
 
 **Analyze a single repo:**
 ```bash
-python -m issues_agent --repos microsoft/vscode --limit 50
+issues-agent --repos microsoft/vscode --limit 50
 ```
 
 **Analyze multiple repos with a specific model:**
 ```bash
-python -m issues_agent --repos owner/repo1,owner/repo2 --model gpt-4o --output triage.md
+issues-agent --repos owner/repo1,owner/repo2 --model gpt-4o --output triage.md
 ```
 
 **Fetch only recent issues:**
 ```bash
-python -m issues_agent --repos owner/repo --since 30d
+issues-agent --repos owner/repo --since 30d
 ```
 
 ## Project Structure

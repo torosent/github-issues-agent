@@ -21,6 +21,9 @@ dependencies = [
 [tool.setuptools.packages.find]
 include = ["issues_agent"]
 
+[project.scripts]
+issues-agent = "issues_agent.cli:main"
+
 [project.optional-dependencies]
 test = [
     "pytest>=7.4.0",
