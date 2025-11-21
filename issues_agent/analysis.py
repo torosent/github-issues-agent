@@ -34,7 +34,7 @@ def analyze_issues(client: AzureOpenAIClient, issues: List[Dict[str, Any]], mode
     system_prompt = (
         "You are an expert software project manager and QA lead. "
         "Your task is to analyze a list of GitHub issues to prioritize them and identify duplicates.\n\n"
-        "For each issue, assign a priority (P0, P1, P2) and provide a brief reasoning based on the impact, urgency, and severity implied by the title, body, and comments.\n"
+        "For each issue, assign a priority (P0, P1, P2) and provide a brief reasoning based on the impact, urgency, and severity implied by the title, body, reactions, and comments.\n"
         " - P0: Critical/Urgent (System down, data loss, blocking bugs)\n"
         " - P1: High Priority (Major functionality broken, important feature requests)\n"
         " - P2: Normal Priority (Minor bugs, nice-to-have features, cosmetic issues)\n\n"
